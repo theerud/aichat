@@ -15,6 +15,12 @@ pub use stream::*;
 register_client!(
     (openai, "openai", OpenAIConfig, OpenAIClient),
     (
+        openai_responses,
+        "openai-responses",
+        OpenAIResponsesConfig,
+        OpenAIResponsesClient
+    ),
+    (
         openai_compatible,
         "openai-compatible",
         OpenAICompatibleConfig,
