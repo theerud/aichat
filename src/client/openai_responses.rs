@@ -33,7 +33,7 @@ impl_client_trait!(
         openai_responses,
         openai_responses_streaming
     ),
-    (prepare_embeddings, openai_embeddings),
+    (noop_prepare_embeddings, noop_embeddings),
     (noop_prepare_rerank, noop_rerank),
 );
 
@@ -60,25 +60,7 @@ fn prepare_chat_completions(
     Ok(request_data)
 }
 
-fn prepare_embeddings(self_: &OpenAIResponsesClient, data: &EmbeddingsData) -> Result<RequestData> {
-    let api_key = self_.get_api_key()?;
-    let api_base = self_
-        .get_api_base()
-        .unwrap_or_else(|_| API_BASE.to_string());
 
-    let url = format!("{api_base}/embeddings");
-
-    let body = openai_build_embeddings_body(data, &self_.model);
-
-    let mut request_data = RequestData::new(url, body);
-
-    request_data.bearer_auth(api_key);
-    if let Some(organization_id) = &self_.config.organization_id {
-        request_data.header("OpenAI-Organization", organization_id);
-    }
-
-    Ok(request_data)
-}
 
 pub async fn openai_responses(
     builder: RequestBuilder,
@@ -173,51 +155,23 @@ pub fn openai_build_responses_body(data: ChatCompletionsData, model: &Model) -> 
         messages,
         temperature,
         top_p,
-        functions,
+        functions: _,
         stream,
     } = data;
 
-    let mut instructions = String::new();
-    let mut input = String::new();
-    let mut tool_outputs = Vec::new();
-    let mut previous_response_id = None;
+    let (last_message, history_messages) = messages.split_last().unzip();
 
-    for message in messages {
-        match message.role {
-            MessageRole::System => instructions.push_str(&message.content.to_text()),
-            MessageRole::User => input.push_str(&message.content.to_text()),
-            MessageRole::Assistant => {
-                 if let MessageContent::Text(text) = message.content {
-                    if text.starts_with("response_id:") {
-                        previous_response_id = Some(text.strip_prefix("response_id:").unwrap().trim().to_string());
-                    } else {
-                        input.push_str(&text);
-                    }
-                }
-            }
-            MessageRole::Tool => {
-                if let MessageContent::ToolCalls(tool_calls) = message.content {
-                    for result in tool_calls.tool_results {
-                        tool_outputs.push(json!({
-                            "tool_call_id": result.call.id,
-                            "output": result.output
-                        }));
-                    }
-                }
-            }
-        }
-    }
+    let (instructions, previous_response_id) = extract_history(history_messages.unwrap_or_default());
+
+    let input = build_request_input(last_message);
 
     let mut body = json!({
         "model": &model.real_name(),
         "input": input,
     });
 
-    if !instructions.is_empty() {
+    if let Some(instructions) = instructions {
         body["instructions"] = instructions.into();
-    }
-    if !tool_outputs.is_empty() {
-        body["tool_outputs"] = json!(tool_outputs);
     }
     if let Some(id) = previous_response_id {
         body["previous_response_id"] = id.into();
@@ -231,93 +185,88 @@ pub fn openai_build_responses_body(data: ChatCompletionsData, model: &Model) -> 
     if stream {
         body["stream"] = true.into();
     }
-    if let Some(functions) = functions {
-        body["tools"] = functions
-            .into_iter()
-            .map(|v| {
-                json!({
-                    "type": "function",
-                    "function": v,
-                })
-            })
-            .collect::<Value>();
-    }
 
     body
 }
 
-pub fn openai_extract_responses(data: &Value) -> Result<ChatCompletionsOutput> {
-    let mut text = String::new();
-    let mut tool_calls = vec![];
+fn extract_history(messages: &[Message]) -> (Option<String>, Option<String>) {
+    let mut instructions = None;
+    let mut previous_response_id = None;
 
-    if let Some(response) = data.get("response") {
-        if let Some(outputs) = response["output"].as_array() {
-            for output in outputs {
-                if let Some(content) = output["content"].as_array() {
-                    for part in content {
-                        if part["type"] == "output_text" {
-                            if let Some(value) = part["text"].as_str() {
-                                text.push_str(value);
-                            }
-                        } else if part["type"] == "tool_code" {
-                            if let (Some(id), Some(function)) = (part["id"].as_str(), part["function"].as_object()) {
-                                let name = function["name"].as_str().unwrap_or_default().to_string();
-                                let arguments = function["args"].as_str().unwrap_or_default().to_string();
-                                let arguments: Value = serde_json::from_str(&arguments).unwrap_or_default();
-                                tool_calls.push(ToolCall::new(name, arguments, Some(id.to_string())));
-                            }
-                        }
-                    }
+    for message in messages {
+        if message.role.is_system() {
+            instructions = Some(message.content.to_text());
+        } else if message.role.is_assistant() {
+            if let MessageContent::Text(text) = &message.content {
+                if let Some(id) = text.strip_prefix("id:").and_then(|s| s.split('\n').next()) {
+                    previous_response_id = Some(id.trim().to_string());
                 }
             }
         }
     }
 
-    if text.is_empty() && tool_calls.is_empty() {
+    (instructions, previous_response_id)
+}
+
+fn build_request_input(message: Option<&Message>) -> Value {
+    let message = match message {
+        Some(message) => message,
+        None => return json!(null),
+    };
+
+    match &message.content {
+        MessageContent::Text(text) => json!(text),
+        MessageContent::Array(list) => {
+            let content: Vec<Value> = list
+                .iter()
+                .map(|item| match item {
+                    MessageContentPart::Text { text } => json!({"type": "input_text", "text": text}),
+                    MessageContentPart::ImageUrl { image_url } => {
+                        json!({"type": "input_image", "image_url": image_url.url, "detail": "auto"})
+                    }
+                })
+                .collect();
+            json!([{"role": "user", "content": content}])
+        }
+        MessageContent::ToolCalls(tool_calls) => {
+            let tool_outputs: Vec<Value> = tool_calls
+                .tool_results
+                .iter()
+                .map(|result| {
+                    json!({
+                        "tool_call_id": result.call.id,
+                        "output": result.output
+                    })
+                })
+                .collect();
+            json!([{"role": "user", "content": [{"type": "tool_outputs", "tool_outputs": tool_outputs}]}])
+        }
+    }
+}
+
+
+pub fn openai_extract_responses(data: &Value) -> Result<ChatCompletionsOutput> {
+    let text = data["output"][0]["content"][0]["text"].as_str().unwrap_or_default().to_string();
+
+    if text.is_empty() {
         bail!("Invalid response data: {data}");
     }
 
     let output = ChatCompletionsOutput {
         text,
-        tool_calls,
-        id: data["id"].as_str().map(|v| v.to_string()),
-        input_tokens: data["usage"]["input_tokens"].as_u64(),
-        output_tokens: data["usage"]["output_tokens"].as_u64(),
+        tool_calls: vec![],
+        id: data.get("id").and_then(|v| v.as_str()).map(|v| v.to_string()),
+        input_tokens: data
+            .get("usage")
+            .and_then(|u| u.get("input_tokens"))
+            .and_then(|v| v.as_u64()),
+        output_tokens: data
+            .get("usage")
+            .and_then(|u| u.get("output_tokens"))
+            .and_then(|v| v.as_u64()),
     };
     Ok(output)
 }
 
 
-// The following are not used by the Responses API, but are kept for trait completeness
-pub async fn openai_embeddings(
-    builder: RequestBuilder,
-    _model: &Model,
-) -> Result<EmbeddingsOutput> {
-    let res = builder.send().await?;
-    let status = res.status();
-    let data: Value = res.json().await?;
-    if !status.is_success() {
-        catch_error(&data, status.as_u16())?;
-    }
-    let res_body: EmbeddingsResBody =
-        serde_json::from_value(data).context("Invalid embeddings data")?;
-    let output = res_body.data.into_iter().map(|v| v.embedding).collect();
-    Ok(output)
-}
 
-#[derive(Deserialize)]
-struct EmbeddingsResBody {
-    data: Vec<EmbeddingsResBodyEmbedding>,
-}
-
-#[derive(Deserialize)]
-struct EmbeddingsResBodyEmbedding {
-    embedding: Vec<f32>,
-}
-
-pub fn openai_build_embeddings_body(data: &EmbeddingsData, model: &Model) -> Value {
-    json!({
-        "input": data.texts,
-        "model": model.real_name()
-    })
-}
