@@ -1,6 +1,6 @@
 use super::*;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use reqwest::RequestBuilder;
 use serde::Deserialize;
 use serde_json::{json, Value};
