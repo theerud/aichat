@@ -161,7 +161,7 @@ pub fn openai_build_responses_body(data: ChatCompletionsData, model: &Model) -> 
 
     let (_, history_messages) = messages.split_last().unzip();
 
-    let (instructions, previous_response_id) = extract_history(history_messages.unwrap_or_default());
+    let instructions = extract_instructions(history_messages.unwrap_or_default());
 
     let input = build_request_input(&messages);
 
@@ -172,9 +172,6 @@ pub fn openai_build_responses_body(data: ChatCompletionsData, model: &Model) -> 
 
     if let Some(instructions) = instructions {
         body["instructions"] = instructions.into();
-    }
-    if let Some(id) = previous_response_id {
-        body["previous_response_id"] = id.into();
     }
     if let Some(v) = temperature {
         body["temperature"] = v.into();
@@ -189,23 +186,14 @@ pub fn openai_build_responses_body(data: ChatCompletionsData, model: &Model) -> 
     body
 }
 
-fn extract_history(messages: &[Message]) -> (Option<String>, Option<String>) {
-    let mut instructions = None;
-    let mut previous_response_id = None;
-
-    for message in messages {
+fn extract_instructions(messages: &[Message]) -> Option<String> {
+    messages.iter().rev().find_map(|message| {
         if message.role.is_system() {
-            instructions = Some(message.content.to_text());
-        } else if message.role.is_assistant() {
-            if let MessageContent::Text(text) = &message.content {
-                if let Some(id) = text.strip_prefix("id:").and_then(|s| s.split('\n').next()) {
-                    previous_response_id = Some(id.trim().to_string());
-                }
-            }
+            Some(message.content.to_text())
+        } else {
+            None
         }
-    }
-
-    (instructions, previous_response_id)
+    })
 }
 
 fn build_request_input(messages: &Vec<Message>) -> Value {
@@ -259,7 +247,10 @@ fn build_request_input(messages: &Vec<Message>) -> Value {
 
 
 pub fn openai_extract_responses(data: &Value) -> Result<ChatCompletionsOutput> {
-    let text = data["output"][0]["content"][0]["text"].as_str().unwrap_or_default().to_string();
+    let text = data["output"][0]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
 
     if text.is_empty() {
         bail!("Invalid response data: {data}");
@@ -280,6 +271,3 @@ pub fn openai_extract_responses(data: &Value) -> Result<ChatCompletionsOutput> {
     };
     Ok(output)
 }
-
-
-
