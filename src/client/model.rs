@@ -135,6 +135,7 @@ impl Model {
                     input_price,
                     output_price,
                     supports_vision,
+                    supports_audio,
                     supports_function_calling,
                     ..
                 } = &self.data;
@@ -145,6 +146,9 @@ impl Model {
                 let mut capabilities = vec![];
                 if *supports_vision {
                     capabilities.push('👁');
+                };
+                if *supports_audio {
+                    capabilities.push('👂');
                 };
                 if *supports_function_calling {
                     capabilities.push('⚒');
@@ -315,6 +319,8 @@ pub struct ModelData {
     pub require_max_tokens: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub supports_vision: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub supports_audio: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub supports_function_calling: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

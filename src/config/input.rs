@@ -13,6 +13,7 @@ use std::{collections::HashMap, fs::File, io::Read};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const IMAGE_EXTS: [&str; 5] = ["png", "jpeg", "jpg", "webp", "gif"];
+const AUDIO_EXTS: [&str; 2] = ["mp3", "wav"];
 const SUMMARY_MAX_WIDTH: usize = 80;
 
 #[derive(Debug, Clone)]
@@ -464,7 +465,7 @@ async fn load_documents(
 
     let local_files = expand_glob_paths(&local_paths, true).await?;
     for file_path in local_files {
-        if is_image(&file_path) {
+        if is_image(&file_path) || is_audio(&file_path) {
             let contents = read_media_to_data_url(&file_path)
                 .with_context(|| format!("Unable to read media '{file_path}'"))?;
             data_urls.insert(sha256(&contents), file_path);
@@ -520,6 +521,12 @@ fn is_image(path: &str) -> bool {
         .unwrap_or_default()
 }
 
+fn is_audio(path: &str) -> bool {
+    get_patch_extension(path)
+        .map(|v| AUDIO_EXTS.contains(&v.as_str()))
+        .unwrap_or_default()
+}
+
 fn read_media_to_data_url(image_path: &str) -> Result<String> {
     let extension = get_patch_extension(image_path).unwrap_or_default();
     let mime_type = match extension.as_str() {
@@ -527,6 +534,8 @@ fn read_media_to_data_url(image_path: &str) -> Result<String> {
         "jpg" | "jpeg" => "image/jpeg",
         "webp" => "image/webp",
         "gif" => "image/gif",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
         _ => bail!("Unexpected media type"),
     };
     let mut file = File::open(image_path)?;
