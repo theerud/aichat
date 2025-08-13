@@ -159,11 +159,11 @@ pub fn openai_build_responses_body(data: ChatCompletionsData, model: &Model) -> 
         stream,
     } = data;
 
-    let (last_message, history_messages) = messages.split_last().unzip();
+    let (_, history_messages) = messages.split_last().unzip();
 
     let (instructions, previous_response_id) = extract_history(history_messages.unwrap_or_default());
 
-    let input = build_request_input(last_message);
+    let input = build_request_input(&messages);
 
     let mut body = json!({
         "model": &model.real_name(),
@@ -208,27 +208,40 @@ fn extract_history(messages: &[Message]) -> (Option<String>, Option<String>) {
     (instructions, previous_response_id)
 }
 
-fn build_request_input(message: Option<&Message>) -> Value {
-    let message = match message {
-        Some(message) => message,
-        None => return json!(null),
-    };
-
-    match &message.content {
-        MessageContent::Text(text) => json!(text),
-        MessageContent::Array(list) => {
+fn build_request_input(messages: &Vec<Message>) -> Value {
+    if messages.len() == 1 {
+        if let MessageContent::Text(text) = &messages[0].content {
+            return json!(text);
+        }
+    }
+    json!(messages.iter().map(|message| match (&message.role, &message.content) {
+        (role, MessageContent::Text(text)) => json!({
+            "role": role, "content": text
+        }),
+        (role, MessageContent::Array(list)) => {
             let content: Vec<Value> = list
                 .iter()
-                .map(|item| match item {
-                    MessageContentPart::Text { text } => json!({"type": "input_text", "text": text}),
-                    MessageContentPart::ImageUrl { image_url } => {
-                        json!({"type": "input_image", "image_url": image_url.url, "detail": "auto"})
+                .map(|item| {
+                    let direction = match role {
+                        MessageRole::Assistant => "output",
+                        _ => "input",
+                    };
+                    match item {
+                        MessageContentPart::Text { text } => json!({
+                            "type": format!("{direction}_text"),
+                            "text": text
+                        }),
+                        MessageContentPart::ImageUrl { image_url } => json!({
+                            "type": format!("{direction}_image"),
+                            "image_url": image_url.url,
+                            "detail": "auto"
+                        }),
                     }
                 })
                 .collect();
-            json!([{"role": "user", "content": content}])
+            json!({"role": role, "content": content})
         }
-        MessageContent::ToolCalls(tool_calls) => {
+        (_, MessageContent::ToolCalls(tool_calls)) => {
             let tool_outputs: Vec<Value> = tool_calls
                 .tool_results
                 .iter()
@@ -241,7 +254,7 @@ fn build_request_input(message: Option<&Message>) -> Value {
                 .collect();
             json!([{"role": "user", "content": [{"type": "tool_outputs", "tool_outputs": tool_outputs}]}])
         }
-    }
+    }).collect::<Value>())
 }
 
 
