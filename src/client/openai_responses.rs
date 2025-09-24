@@ -247,10 +247,22 @@ fn build_request_input(messages: &Vec<Message>) -> Value {
 
 
 pub fn openai_extract_responses(data: &Value) -> Result<ChatCompletionsOutput> {
-    let text = data["output"][0]["content"][0]["text"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
+    let text = data["output"]
+        .as_array()
+        .and_then(|outputs| {
+            outputs
+                .iter()
+                .find(|output| output["type"] == "message")
+                .and_then(|message| message["content"].as_array())
+                .map(|contents| {
+                    contents
+                        .iter()
+                        .filter_map(|content| content["text"].as_str())
+                        .collect::<Vec<&str>>()
+                        .join("")
+                })
+        })
+        .unwrap_or_default();
 
     if text.is_empty() {
         bail!("Invalid response data: {data}");
