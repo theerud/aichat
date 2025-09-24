@@ -165,19 +165,26 @@ pub fn openai_build_responses_body(data: ChatCompletionsData, model: &Model) -> 
 
     let input = build_request_input(&messages);
 
+    let model_name = model.real_name();
     let mut body = json!({
-        "model": &model.real_name(),
+        "model": model_name,
         "input": input,
     });
 
     if let Some(instructions) = instructions {
         body["instructions"] = instructions.into();
     }
-    if let Some(v) = temperature {
-        body["temperature"] = v.into();
-    }
-    if let Some(v) = top_p {
-        body["top_p"] = v.into();
+    if !(model_name.starts_with("o1")
+        || model_name.starts_with("o3")
+        || model_name.starts_with("o4")
+        || model_name.starts_with("gpt-5"))
+    {
+        if let Some(v) = temperature {
+            body["temperature"] = v.into();
+        }
+        if let Some(v) = top_p {
+            body["top_p"] = v.into();
+        }
     }
     if stream {
         body["stream"] = true.into();
